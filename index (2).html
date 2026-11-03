@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#123b63">
+<title>Monitor de Distância ESP32</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#172b3a;background:#eef3f7}
+*{box-sizing:border-box}body{margin:0;padding:20px 14px 36px}
+main{max-width:620px;margin:auto}
+header{background:#123b63;color:white;padding:22px;border-radius:18px;margin-bottom:16px}
+h1{font-size:22px;margin:0 0 6px}header p{margin:0;color:#d6e5f2;font-size:14px}
+.card{background:white;border-radius:16px;padding:18px;margin:12px 0;box-shadow:0 3px 14px #193b5610}
+.status{display:flex;align-items:center;gap:9px;font-weight:650}
+.dot{width:10px;height:10px;border-radius:50%;background:#9ca3af}
+.dot.on{background:#16a34a}.dot.off{background:#dc2626}
+button{border:0;border-radius:11px;padding:13px 16px;font-size:15px;font-weight:650;cursor:pointer}
+.primary{background:#145da0;color:white;width:100%}.secondary{background:#e7eef5;color:#174365}
+button:disabled{opacity:.45;cursor:not-allowed}
+.value{font-size:64px;font-weight:800;letter-spacing:-2px;color:#123b63;line-height:1.1;margin:12px 0 2px}
+.unit{font-size:20px;font-weight:600;color:#526779}
+.muted{color:#647789;font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.metric{background:#f3f7fa;padding:13px;border-radius:12px}
+.metric b{display:block;font-size:22px;margin-top:4px}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+ol{padding-left:20px;line-height:1.6;font-size:14px;color:#465b6b}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:9px 5px;border-bottom:1px solid #e8eef3}
+th{color:#647789;font-size:12px}
+#log{max-height:230px;overflow:auto}
+.error{color:#b42318;background:#fff1f0;padding:10px;border-radius:9px;display:none;font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Monitor de Distância</h1>
+<p>Leitura direta do sensor ultrassônico conectado ao ESP32 por Bluetooth BLE.</p>
+</header>
+
+<section class="card">
+<div class="status"><span id="dot" class="dot off"></span><span id="status">Desconectado</span></div>
+<p class="muted" id="deviceName">Nenhum ESP32 conectado</p>
+<button id="connect" class="primary">Conectar ao ESP32</button>
+<div class="actions">
+<button id="disconnect" class="secondary" disabled>Desconectar</button>
+<button id="clear" class="secondary">Limpar histórico</button>
+</div>
+<p id="error" class="error"></p>
+</section>
+
+<section class="card">
+<div class="muted">DISTÂNCIA SENSOR → ÁGUA</div>
+<div><span class="value" id="distance">—</span><span class="unit"> cm</span></div>
+<p class="muted" id="updated">Aguardando primeira leitura</p>
+</section>
+
+<section class="card">
+<div class="grid">
+<div class="metric"><span class="muted">Menor distância</span><b id="min">—</b></div>
+<div class="metric"><span class="muted">Maior distância</span><b id="max">—</b></div>
+</div>
+<p class="muted" style="margin-bottom:0">Os valores mínimo e máximo consideram apenas as leituras recebidas desde que o histórico foi iniciado ou limpo.</p>
+</section>
+
+<section class="card">
+<h3 style="margin:0 0 8px">Últimas leituras</h3>
+<div id="log"><p class="muted">Nenhuma leitura recebida.</p></div>
+</section>
+
+<section class="card">
+<h3 style="margin:0 0 8px">Como usar</h3>
+<ol>
+<li>Abra esta página no Chrome (Android ou computador compatível), usando o endereço HTTPS do GitHub Pages.</li>
+<li>Ligue o ESP32 e mantenha-o próximo do dispositivo.</li>
+<li>Toque em <b>Conectar ao ESP32</b> e selecione <b>CaixaDagua_ESP32</b>.</li>
+<li>O aplicativo exibirá o número recebido em centímetros. A mensagem <code>DIST:25.3</code> será interpretada como 25,3 cm.</li>
+</ol>
+<p class="muted">Este aplicativo lê o Bluetooth BLE. Não consulta Google Sheets nem acompanha o sensor pela internet.</p>
+</section>
+</main>
+<script>
+const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+let device = null, characteristic = null, values = [];
+const $ = id => document.getElementById(id);
+function showError(message){$('error').textContent=message;$('error').style.display='block'}
+function clearError(){$('error').style.display='none'}
+function setConnected(connected){
+ $('dot').className='dot '+(connected?'on':'off');
+ $('status').textContent=connected?'Conectado por Bluetooth':'Desconectado';
+ $('connect').disabled=connected;
+ $('disconnect').disabled=!connected;
+}
+function parseValue(text){
+ const s=text.trim();
+ if(s.toUpperCase()==='ERRO') return null;
+ const m=s.match(/DIST\s*:\s*(-?\d+(?:[.,]\d+)?)/i) || s.match(/^-?\d+(?:[.,]\d+)?$/);
+ if(!m) return null;
+ const n=parseFloat((m[1]||m[0]).replace(',','.'));
+ return Number.isFinite(n)&&n>0?n:null;
+}
+function receive(text){
+ const n=parseValue(text);
+ if(n===null){if(text.trim().toUpperCase()==='ERRO'){$('distance').textContent='ERRO';$('updated').textContent='Sensor sem eco ou leitura fora da faixa';}return}
+ const now=new Date();
+ values.unshift({n,time:now});
+ values=values.slice(0,100);
+ $('distance').textContent=n.toFixed(1).replace('.',',');
+ $('updated').textContent='Atualizado às '+now.toLocaleTimeString('pt-BR');
+ $('min').textContent=Math.min(...values.map(v=>v.n)).toFixed(1).replace('.',',')+' cm';
+ $('max').textContent=Math.max(...values.map(v=>v.n)).toFixed(1).replace('.',',')+' cm';
+ renderLog();
+}
+function renderLog(){
+ if(!values.length){$('log').innerHTML='<p class="muted">Nenhuma leitura recebida.</p>';return}
+ $('log').innerHTML='<table><thead><tr><th>Horário</th><th>Distância</th></tr></thead><tbody>'+
+ values.slice(0,20).map(v=>`<tr><td>${v.time.toLocaleTimeString('pt-BR')}</td><td>${v.n.toFixed(1).replace('.',',')} cm</td></tr>`).join('')+
+ '</tbody></table>';
+}
+function onValue(event){
+ const bytes=event.target.value;
+ const text=new TextDecoder().decode(bytes);
+ receive(text);
+}
+async function connect(){
+ clearError();
+ if(!navigator.bluetooth){showError('Web Bluetooth não está disponível neste navegador. Use Chrome atualizado em HTTPS.');return}
+ try{
+  device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});
+  device.addEventListener('gattserverdisconnected',()=>{
+   setConnected(false);characteristic=null;$('deviceName').textContent='Conexão encerrada';
+  });
+  $('status').textContent='Conectando…';
+  const server=await device.gatt.connect();
+  const service=await server.getPrimaryService(SERVICE);
+  characteristic=await service.getCharacteristic(TX);
+  await characteristic.startNotifications();
+  characteristic.addEventListener('characteristicvaluechanged',onValue);
+  setConnected(true);
+  $('deviceName').textContent=device.name||'ESP32';
+  try{const initial=await characteristic.readValue();const txt=new TextDecoder().decode(initial);if(txt)receive(txt)}catch(e){}
+ }catch(e){
+  setConnected(false);
+  if(e.name!=='NotFoundError')showError('Não foi possível conectar: '+e.message);
+ }
+}
+async function disconnect(){
+ try{if(device?.gatt?.connected)device.gatt.disconnect()}catch(e){}
+ setConnected(false);characteristic=null;
+}
+$('connect').addEventListener('click',connect);
+$('disconnect').addEventListener('click',disconnect);
+$('clear').addEventListener('click',()=>{values=[];$('min').textContent='—';$('max').textContent='—';$('distance').textContent='—';$('updated').textContent='Histórico limpo';renderLog()});
+</script>
+</body>
+</html>
